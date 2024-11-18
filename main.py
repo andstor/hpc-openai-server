@@ -10,7 +10,7 @@ import gc
 from threading import Thread
 from pydantic import BaseModel, Field
 import uvicorn
-from transformers import TextIteratorStreamer, AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import TextStreamer, TextIteratorStreamer, AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 import torch
 from fastapi import Body, FastAPI
 from torch import seed
@@ -325,38 +325,12 @@ async def chat_completion(request: Request):
     outputs = []
     for n in range(1, num_completions + 1):
         logger.info(f"Running {n}/{num_completions} chat completions on conversation with {len(messages)} messages.")
-        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=3, **decode_kwargs)
-        
-        #outputs = model.generate(**inputs,streamer=streamer, generation_config=generation_config)
-        generation_kwargs = dict(inputs, streamer=streamer, tokenizer=tokenizer, generation_config=generation_config)
-        thread = Thread(target=model.generate, name = "kodfoko", kwargs=generation_kwargs)
-        try:
-            thread.start()
-        except Exception as e:
-            logger.warning(f"Thread failed to start: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="Thread failed to start",
-            )
-
-        output = ""
-        for new_text in streamer:
-            print(new_text, end="", flush=True)
-            output += new_text
-        print()
-        outputs.append(output)
-        thread.join(None)
-        if thread.is_alive():
-            logger.warning("Thread is still alive. Killing it.")
-            thread.kill()
-            
-            raise HTTPException(
-                status_code=500,
-                detail="Thread is still alive. Killing it.",
-            )   
-        
+        streamer = TextStreamer(tokenizer, skip_prompt=True, **decode_kwargs)
+        output = model.generate(**inputs, streamer=streamer, tokenizer=tokenizer, generation_config=generation_config)
+        new_output = output[0][inputs["input_ids"].shape[1]:]
+        output_text = tokenizer.decode(new_output, **decode_kwargs)
+        outputs.append(output_text)
         clear_device_cache(garbage_collection=True)
-
 
     created = int(time.time())
     id = str(seed) + "-" + str(created)
