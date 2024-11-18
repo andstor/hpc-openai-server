@@ -325,7 +325,7 @@ async def chat_completion(request: Request):
     outputs = []
     for n in range(1, num_completions + 1):
         logger.info(f"Running {n}/{num_completions} chat completions on conversation with {len(messages)} messages.")
-        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=1, **decode_kwargs)
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=3, **decode_kwargs)
         
         #outputs = model.generate(**inputs,streamer=streamer, generation_config=generation_config)
         generation_kwargs = dict(inputs, streamer=streamer, tokenizer=tokenizer, generation_config=generation_config)
