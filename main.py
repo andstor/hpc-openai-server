@@ -55,7 +55,7 @@ config = {
 }
 logger.configure(**config)
 
-#load_dotenv()
+load_dotenv()
 PORT = int(getenv("PORT", 8000))
 NGROK_AUTH_TOKEN = getenv("NGROK_AUTH_TOKEN")
 NGROK_DOMAIN = getenv("NGROK_DOMAIN")
