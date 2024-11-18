@@ -28,25 +28,39 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
 from fastapi import Request
 from src.utils import BatchTextIteratorStreamer
-from src.types import Generation
+#from src.types import Generation
 
 from os import getenv
 from dotenv import load_dotenv
 from accelerate.utils.memory import clear_device_cache
 
+from starlette.responses import Response
+from traceback import print_exception
 import sys
-from loguru import logger
+
+
+
 #import logging
 
 #logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 #logger = logging.getLogger(__name__)
 
-load_dotenv()
-APPLICATION_PORT = int(getenv("APPLICATION_PORT", 8000))
-NGROK_AUTH_TOKEN = getenv("NGROK_AUTH_TOKEN", "")
-NGROK_DOMAIN = getenv("NGROK_DOMAIN", "")
-USERNAME = getenv("USERNAME", "")
-PASSWORD = getenv("PASSWORD", "")
+from loguru import logger
+config = {
+    "handlers": [
+        {"sink": sys.stdout, "format": "<g>{time:YYYY-MM-DD HH:mm:ss}</g> | <g>{level}</g> |  {message}", "level": "INFO"},
+        {"sink": sys.stdout, "format": "<y>{time:YYYY-MM-DD HH:mm:ss}</y> | <y>{level}</y> |  {message}", "level": "WARNING"},
+        {"sink": sys.stdout, "format": "<r>{time:YYYY-MM-DD HH:mm:ss}</r> | <r>{level}</r> |  {message}", "level": "ERROR"},        
+    ]
+}
+logger.configure(**config)
+
+#load_dotenv()
+PORT = int(getenv("PORT", 8000))
+NGROK_AUTH_TOKEN = getenv("NGROK_AUTH_TOKEN")
+NGROK_DOMAIN = getenv("NGROK_DOMAIN")
+BASIC_AUTH = getenv("BASIC_AUTH")
+
 
 class ServeModelInfoResult(BaseModel):
     """
@@ -86,11 +100,12 @@ class ServeForwardResult(BaseModel):
 async def lifespan(app: FastAPI):
     logger.info("Setting up Ngrok Tunnel")
     ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-    ngrok.forward(
-        addr=APPLICATION_PORT,
+    listener = await ngrok.forward(
+        addr=PORT,
         domain=NGROK_DOMAIN,
-        basic_auth=[USERNAME + ":" + PASSWORD],
+        basic_auth=[BASIC_AUTH], # username:password
     )
+    logger.info(f"Ingress established at: {listener.url()}")
     yield
     logger.info("Tearing Down Ngrok Tunnel")
     ngrok.disconnect()
@@ -99,6 +114,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        # you probably want some kind of logging here
+        etype, value, tb = sys.exc_info()
+        print_exception(etype, value, tb)
+        return Response("Internal server error", status_code=500)
+
+app.middleware('http')(catch_exceptions_middleware)
 
 
 accelerator = Accelerator()
@@ -236,12 +261,11 @@ def generate(generation):#: resources.Generation):
     return response
 
 
-import pprint
-from openai.resources import Completions
+import json
 @app.post("/v1/chat/completions", response_model=ChatCompletion)
 async def chat_completion(request: Request):
     kwargs = await request.json()
-    pprint.pp(kwargs)
+    logger.info("Received POST request to /v1/chat/completions with body: " + json.dumps(kwargs, indent=4))
 
     seed = torch.seed()
     if "seed" in kwargs:
@@ -278,12 +302,15 @@ async def chat_completion(request: Request):
     generation_config = GenerationConfig.from_model_config(model.config)
     generation_config.update(**kwargs_clean)
     
-    stop_strings = kwargs.get("stop", [])
-    if generation_config.stop_strings is not None:
-        generation_config.stop_strings = generation_config.stop_strings.extend(stop_strings)
-    else:
-        generation_config.stop_strings = stop_strings
-
+    # if exists and not empty
+    if "stop" in kwargs_clean:
+        if len(kwargs["stop"]) == 0:
+            generation_config.stop_strings = None
+        elif type(generation_config.stop_strings) == list:
+            generation_config.stop_strings = generation_config.stop_strings.extend(kwargs_clean.pop("stop"))
+        else:
+            generation_config.stop_strings = kwargs_clean.pop("stop")
+    
     if num_completions > 1 and generation_config.temperature == 0:
         raise HTTPException(
             status_code=400,
@@ -298,12 +325,19 @@ async def chat_completion(request: Request):
     outputs = []
     for n in range(1, num_completions + 1):
         logger.info(f"Running {n}/{num_completions} chat completions on conversation with {len(messages)} messages.")
-        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, **decode_kwargs)
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=1, **decode_kwargs)
         
         #outputs = model.generate(**inputs,streamer=streamer, generation_config=generation_config)
         generation_kwargs = dict(inputs, streamer=streamer, tokenizer=tokenizer, generation_config=generation_config)
-        thread = Thread(target=model.generate, kwargs=generation_kwargs)
-        thread.start()
+        thread = Thread(target=model.generate, name = "kodfoko", kwargs=generation_kwargs)
+        try:
+            thread.start()
+        except Exception as e:
+            logger.warning(f"Thread failed to start: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Thread failed to start",
+            )
 
         output = ""
         for new_text in streamer:
@@ -311,7 +345,16 @@ async def chat_completion(request: Request):
             output += new_text
         print()
         outputs.append(output)
-        thread.join()
+        thread.join(None)
+        if thread.is_alive():
+            logger.warning("Thread is still alive. Killing it.")
+            thread.kill()
+            
+            raise HTTPException(
+                status_code=500,
+                detail="Thread is still alive. Killing it.",
+            )   
+        
         clear_device_cache(garbage_collection=True)
 
 
@@ -344,4 +387,20 @@ async def chat_completion(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=APPLICATION_PORT, reload=False)
+    
+    # argparse
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run the FastAPI server')
+    parser.add_argument('--port', type=str, help='Port to run the FastAPI server')
+    parser.add_argument('--basic_auth', type=str, help='Basic authentication "username:password"')
+    parser.add_argument('--ngrok_auth_token', type=str, help='Ngrok token')
+    parser.add_argument('--ngrok_domain', type=str, help='Ngrok domain')
+    args = parser.parse_args()
+    
+    # Set all as environment variables
+    for arg in vars(args):
+        if getattr(args, arg) is not None:
+            os.environ[arg.upper()] = getattr(args, arg)
+
+    uvicorn.run("main:app", host="127.0.0.1", port=int(args.port), reload=True)
