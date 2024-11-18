@@ -404,4 +404,4 @@ if __name__ == "__main__":
             os.environ[arg.upper()] = getattr(args, arg)
 
     PORT = int(getenv("PORT", 8000))
-    uvicorn.run("main:app", host="127.0.0.1", port=PORT, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=PORT, reload=False)
