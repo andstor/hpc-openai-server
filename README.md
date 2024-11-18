@@ -1,24 +1,10 @@
 # hpc-openai-server
 
-Transfer files to remote host
-
-scp -r -i path/to/your-key.pem path/to/folder user@your-ec2-public-ip:/path/to/destination/directory
-
-
-Start fastapi server
-uvicorn main:app --host 0.0.0.0 --port 8000
-
-Start fastapi server in houp mode
-nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
-
-
 ## Requirements
 
 ```
 pip install -r requirements.txt
 ```
-
-
 
 ```
 cp .env.template .env
